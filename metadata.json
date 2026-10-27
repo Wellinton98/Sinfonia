@@ -1,0 +1,6 @@
+{
+  "name": "Sinfonia - Música Offline & Letras Sincronizadas",
+  "description": "Aplicativo de música com reprodução offline em IndexedDB, criação de playlists personalizadas, letras sincronizadas em tempo real e modo noturno refinado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
