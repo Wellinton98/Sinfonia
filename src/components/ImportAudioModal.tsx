@@ -1,221 +1,233 @@
 import React, { useRef, useState } from 'react';
-import { FileAudio, Music, Plus, Sparkles, Upload, X } from 'lucide-react';
+import { FileAudio, FolderOpen, Music, Upload, X } from 'lucide-react';
 import { Track } from '../types/music';
 import { dbService } from '../services/indexedDbService';
 
 interface ImportAudioModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onTrackImported: (track: Track) => void;
+  onTracksImported: (tracks: Track[]) => Promise<void> | void;
   isDark: boolean;
+}
+
+const AUDIO_EXTENSIONS = /\.(mp3|wav|ogg|m4a|flac|aac|opus)$/i;
+const DEFAULT_COVER = '/src/assets/images/album_midnight_vibes_1793144450565.jpg';
+
+function getAudioDuration(file: File): Promise<number> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => {
+      const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      URL.revokeObjectURL(url);
+      resolve(duration);
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(0);
+    };
+    audio.src = url;
+  });
+}
+
+function makeTrackId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `local-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export const ImportAudioModal: React.FC<ImportAudioModalProps> = ({
   isOpen,
   onClose,
-  onTrackImported,
+  onTracksImported,
   isDark,
 }) => {
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [title, setTitle] = useState('');
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [albumName, setAlbumName] = useState('');
   const [artist, setArtist] = useState('');
-  const [album, setAlbum] = useState('Arquivos do Dispositivo');
-  const [lyrics, setLyrics] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [progress, setProgress] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!isOpen) return null;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setSelectedFile(file);
-      // Auto-extract title from file name
-      const cleanName = file.name.replace(/\.[^/.]+$/, '');
-      const parts = cleanName.split(' - ');
-      if (parts.length > 1) {
-        setArtist(parts[0].trim());
-        setTitle(parts[1].trim());
-      } else {
-        setTitle(cleanName);
-        setArtist('Artista Local');
-      }
-      setErrorMsg('');
+  const handleFolderChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    const audioFiles = files
+      .filter((file) => file.type.startsWith('audio/') || AUDIO_EXTENSIONS.test(file.name))
+      .sort((a, b) => {
+        const pathA = (a as File & { webkitRelativePath?: string }).webkitRelativePath || a.name;
+        const pathB = (b as File & { webkitRelativePath?: string }).webkitRelativePath || b.name;
+        return pathA.localeCompare(pathB, undefined, { numeric: true, sensitivity: 'base' });
+      });
+
+    if (audioFiles.length === 0) {
+      setSelectedFiles([]);
+      setErrorMsg('Não encontrei arquivos de áudio nessa pasta. Selecione uma pasta com MP3, WAV, FLAC, M4A ou OGG.');
+      return;
     }
+
+    const firstPath = (audioFiles[0] as File & { webkitRelativePath?: string }).webkitRelativePath || '';
+    const detectedAlbum = firstPath.split('/').filter(Boolean)[0] || 'Meu Álbum';
+    setSelectedFiles(audioFiles);
+    setAlbumName(detectedAlbum);
+    setArtist('');
+    setErrorMsg('');
+    setProgress('');
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedFile) {
-      setErrorMsg('Por favor selecione um arquivo de áudio do seu dispositivo.');
+  const handleClose = () => {
+    if (isLoading) return;
+    setSelectedFiles([]);
+    setAlbumName('');
+    setArtist('');
+    setErrorMsg('');
+    setProgress('');
+    if (folderInputRef.current) folderInputRef.current.value = '';
+    onClose();
+  };
+
+  const handleImport = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!selectedFiles.length) {
+      setErrorMsg('Selecione uma pasta que contenha músicas.');
+      return;
+    }
+    if (!albumName.trim()) {
+      setErrorMsg('Informe o nome do álbum.');
       return;
     }
 
     setIsLoading(true);
+    setErrorMsg('');
+    const importedTracks: Track[] = [];
+
     try {
-      const trackId = `imported-${Date.now()}`;
-      const fileSizeMB = Math.round((selectedFile.size / (1024 * 1024)) * 10) / 10;
+      for (let index = 0; index < selectedFiles.length; index += 1) {
+        const file = selectedFiles[index];
+        setProgress(`Importando ${index + 1} de ${selectedFiles.length}: ${file.name}`);
 
-      // Save raw audio blob in IndexedDB
-      await dbService.saveAudioBlob(trackId, selectedFile);
+        const trackId = makeTrackId();
+        await dbService.saveAudioBlob(trackId, file);
 
-      // Create Track metadata
-      const newTrack: Track = {
-        id: trackId,
-        title: title.trim() || selectedFile.name,
-        artist: artist.trim() || 'Artista Local',
-        album: album.trim() || 'Arquivos Offline',
-        duration: 180, // Default duration if not measured
-        coverUrl: '/src/assets/images/album_midnight_vibes_1793144450565.jpg',
-        genre: 'Música Offline',
-        year: new Date().getFullYear(),
-        colorAccent: 'from-indigo-600 to-cyan-900',
-        plays: 0,
-        isFavorite: false,
-        lyricsLRC: lyrics.trim() || `[00:00.00] ${title.trim()}\n[00:05.00] Música importada para ouvir offline no Sinfonia`,
-        isOfflineAvailable: true,
-        fileSizeMB,
-        isLocalImport: true,
-      };
+        const cleanName = file.name.replace(/\.[^/.]+$/, '');
+        const parts = cleanName.split(' - ');
+        const hasArtistPrefix = parts.length > 1 && !/^\\d+$/.test(parts[0].trim());
+        const fileArtist = hasArtistPrefix ? parts[0].trim() : artist.trim();
+        const title = parts.length > 1 ? parts.slice(1).join(' - ').trim() : cleanName;
 
-      onTrackImported(newTrack);
-      onClose();
-    } catch (err: any) {
-      setErrorMsg(`Erro ao salvar arquivo offline: ${err.message || 'Falha de leitura'}`);
+        importedTracks.push({
+          id: trackId,
+          title: title || cleanName,
+          artist: fileArtist || 'Artista Local',
+          album: albumName.trim(),
+          duration: await getAudioDuration(file),
+          coverUrl: DEFAULT_COVER,
+          genre: 'Música Local',
+          year: new Date().getFullYear(),
+          colorAccent: 'from-indigo-600 to-cyan-900',
+          plays: 0,
+          isFavorite: false,
+          lyricsLRC: '',
+          isOfflineAvailable: true,
+          fileSizeMB: Math.round((file.size / (1024 * 1024)) * 10) / 10,
+          isLocalImport: true,
+        });
+      }
+
+      await onTracksImported(importedTracks);
+      setIsLoading(false);
+      handleClose();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Falha ao importar as músicas.';
+      setErrorMsg(`Não foi possível concluir a importação: ${message}`);
     } finally {
       setIsLoading(false);
+      setProgress('');
     }
   };
 
+  const surface = isDark
+    ? 'bg-zinc-900 text-zinc-100 border-zinc-800'
+    : 'bg-white text-stone-900 border-stone-200';
+  const muted = isDark ? 'text-zinc-400' : 'text-stone-500';
+  const inputStyle = `w-full px-3 py-2.5 text-sm rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isDark ? 'bg-zinc-950 border-zinc-700 text-white' : 'bg-stone-50 border-stone-300 text-stone-900'}`;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
-      <div
-        className={`w-full max-w-lg rounded-2xl p-6 shadow-2xl transition-all border ${
-          isDark ? 'bg-zinc-900 text-zinc-100 border-zinc-800' : 'bg-white text-stone-900 border-stone-200'
-        }`}
-      >
+      <div className={`w-full max-w-lg rounded-2xl p-6 shadow-2xl border ${surface}`}>
         <div className="flex items-center justify-between pb-4 border-b border-inherit">
           <div className="flex items-center gap-2">
-            <Upload className="w-5 h-5 text-indigo-500" />
-            <h3 className="text-base font-semibold">Importar Música para Ouvir Offline</h3>
+            <FolderOpen className="w-5 h-5 text-indigo-500" />
+            <h3 className="text-base font-semibold">Importar álbum do dispositivo</h3>
           </div>
-          <button
-            onClick={onClose}
-            className={`p-1 rounded-lg ${isDark ? 'hover:bg-zinc-800 text-zinc-400' : 'hover:bg-stone-100 text-stone-500'}`}
-          >
+          <button onClick={handleClose} disabled={isLoading} className={`p-1 rounded-lg disabled:opacity-40 ${muted}`} aria-label="Fechar">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-5 space-y-4">
-          {/* File Picker Drag & Drop Box */}
-          <div
-            onClick={() => fileInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-colors ${
-              selectedFile
-                ? isDark
-                  ? 'border-indigo-500/50 bg-indigo-950/20'
-                  : 'border-indigo-400 bg-indigo-50/50'
-                : isDark
-                ? 'border-zinc-700 hover:border-zinc-500 bg-zinc-950/50'
-                : 'border-stone-300 hover:border-stone-400 bg-stone-50'
-            }`}
+        <form onSubmit={handleImport} className="mt-5 space-y-4">
+          <button
+            type="button"
+            onClick={() => folderInputRef.current?.click()}
+            disabled={isLoading}
+            className={`w-full border-2 border-dashed rounded-xl p-6 text-center transition-colors disabled:opacity-50 ${selectedFiles.length ? 'border-indigo-500 bg-indigo-500/10' : isDark ? 'border-zinc-700 hover:border-zinc-500 bg-zinc-950/50' : 'border-stone-300 hover:border-stone-400 bg-stone-50'}`}
           >
             <input
+              ref={folderInputRef}
               type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac"
+              multiple
+              accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac,.aac,.opus"
               className="hidden"
+              onChange={handleFolderChange}
+              {...({ webkitdirectory: '', directory: '' } as any)}
             />
-            <FileAudio className="w-10 h-10 mx-auto text-indigo-500 mb-2 opacity-80" />
-            {selectedFile ? (
-              <div>
-                <p className="text-sm font-semibold text-indigo-400 truncate">{selectedFile.name}</p>
-                <p className={`text-xs mt-1 ${isDark ? 'text-zinc-400' : 'text-stone-500'}`}>
-                  {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB · Arquivo de áudio pronto para salvar offline
-                </p>
-              </div>
+            {selectedFiles.length ? (
+              <>
+                <Music className="w-10 h-10 mx-auto text-indigo-500 mb-2" />
+                <p className="text-sm font-semibold text-indigo-400">{selectedFiles.length} músicas encontradas</p>
+                <p className={`text-xs mt-1 ${muted}`}>Clique para escolher outra pasta</p>
+              </>
             ) : (
-              <div>
-                <p className="text-sm font-medium">Toque para selecionar um arquivo de áudio</p>
-                <p className={`text-xs mt-1 ${isDark ? 'text-zinc-400' : 'text-stone-500'}`}>
-                  Suporta MP3, WAV, FLAC, M4A ou OGG do seu celular ou computador
-                </p>
-              </div>
+              <>
+                <Upload className="w-10 h-10 mx-auto text-indigo-500 mb-2" />
+                <p className="text-sm font-semibold">Selecionar pasta do álbum</p>
+                <p className={`text-xs mt-1 ${muted}`}>Escolha uma pasta com seus arquivos de áudio</p>
+              </>
             )}
-          </div>
+          </button>
 
-          {errorMsg && (
-            <p className="text-xs text-rose-500 font-medium">{errorMsg}</p>
+          {selectedFiles.length > 0 && (
+            <div className={`rounded-xl p-3 text-xs ${isDark ? 'bg-zinc-950' : 'bg-stone-50'}`}>
+              <p className="font-semibold mb-1">Prévia das faixas</p>
+              <ul className={`space-y-1 ${muted}`}>
+                {selectedFiles.slice(0, 4).map((file) => <li key={file.name} className="truncate">♫ {file.name}</li>)}
+              </ul>
+              {selectedFiles.length > 4 && <p className={`mt-1 ${muted}`}>e mais {selectedFiles.length - 4} faixas...</p>}
+            </div>
           )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className={`block text-xs font-semibold uppercase tracking-wider mb-1 ${isDark ? 'text-zinc-400' : 'text-stone-600'}`}>
-                Título da Música *
-              </label>
-              <input
-                type="text"
-                required
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Ex: Minha Canção"
-                className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                  isDark ? 'bg-zinc-950 border-zinc-700 text-white' : 'bg-stone-50 border-stone-300 text-stone-900'
-                }`}
-              />
-            </div>
-
-            <div>
-              <label className={`block text-xs font-semibold uppercase tracking-wider mb-1 ${isDark ? 'text-zinc-400' : 'text-stone-600'}`}>
-                Artista *
-              </label>
-              <input
-                type="text"
-                required
-                value={artist}
-                onChange={(e) => setArtist(e.target.value)}
-                placeholder="Ex: Nome do Artista"
-                className={`w-full px-3 py-2 text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                  isDark ? 'bg-zinc-950 border-zinc-700 text-white' : 'bg-stone-50 border-stone-300 text-stone-900'
-                }`}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className={`block text-xs font-semibold uppercase tracking-wider mb-1 ${isDark ? 'text-zinc-400' : 'text-stone-600'}`}>
-              Letra em Tempo Real (Formato LRC opcional)
+            <label className="block">
+              <span className={`block text-xs font-semibold mb-1 ${muted}`}>Nome do álbum</span>
+              <input value={albumName} onChange={(e) => setAlbumName(e.target.value)} placeholder="Ex: Meu álbum" className={inputStyle} required />
             </label>
-            <textarea
-              rows={3}
-              value={lyrics}
-              onChange={(e) => setLyrics(e.target.value)}
-              placeholder="[00:05.00] Primeira frase da canção&#10;[00:10.00] Segunda frase sincronizada..."
-              className={`w-full p-3 font-mono text-xs rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none ${
-                isDark ? 'bg-zinc-950 border-zinc-700 text-white placeholder-zinc-600' : 'bg-stone-50 border-stone-300 text-stone-900 placeholder-stone-400'
-              }`}
-            />
+            <label className="block">
+              <span className={`block text-xs font-semibold mb-1 ${muted}`}>Artista (opcional)</span>
+              <input value={artist} onChange={(e) => setArtist(e.target.value)} placeholder="Artista padrão" className={inputStyle} />
+            </label>
           </div>
+          <p className={`text-xs ${muted}`}>Dica: nomes no formato “Artista - Música.mp3” são identificados automaticamente. Se o nome do artista não estiver no arquivo, usaremos o artista informado acima.</p>
+
+          {progress && <p className="text-xs text-indigo-400">{progress}</p>}
+          {errorMsg && <p className="text-xs text-rose-500 font-medium">{errorMsg}</p>}
 
           <div className="flex justify-end gap-3 pt-3 border-t border-inherit">
-            <button
-              type="button"
-              onClick={onClose}
-              className={`px-4 py-2 rounded-xl text-xs font-medium ${
-                isDark ? 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700' : 'bg-stone-100 text-stone-700 hover:bg-stone-200'
-              }`}
-            >
-              Cancelar
-            </button>
-            <button
-              type="submit"
-              disabled={isLoading || !selectedFile}
-              className="px-5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 shadow-md shadow-indigo-600/20 disabled:opacity-50"
-            >
-              {isLoading ? 'Salvando Offline...' : 'Salvar no Dispositivo'}
+            <button type="button" onClick={handleClose} disabled={isLoading} className={`px-4 py-2 rounded-xl text-xs font-medium disabled:opacity-40 ${isDark ? 'bg-zinc-800 text-zinc-300' : 'bg-stone-100 text-stone-700'}`}>Cancelar</button>
+            <button type="submit" disabled={isLoading || !selectedFiles.length} className="px-5 py-2 rounded-xl text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50">
+              {isLoading ? 'Importando...' : 'Importar álbum'}
             </button>
           </div>
         </form>
