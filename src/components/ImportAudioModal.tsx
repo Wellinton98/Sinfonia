@@ -114,7 +114,8 @@ export const ImportAudioModal: React.FC<ImportAudioModalProps> = ({
 
         const cleanName = file.name.replace(/\.[^/.]+$/, '');
         const parts = cleanName.split(' - ');
-        const fileArtist = parts.length > 1 ? parts[0].trim() : artist.trim();
+        const hasArtistPrefix = parts.length > 1 && !/^\\d+$/.test(parts[0].trim());
+        const fileArtist = hasArtistPrefix ? parts[0].trim() : artist.trim();
         const title = parts.length > 1 ? parts.slice(1).join(' - ').trim() : cleanName;
 
         importedTracks.push({
@@ -137,6 +138,7 @@ export const ImportAudioModal: React.FC<ImportAudioModalProps> = ({
       }
 
       await onTracksImported(importedTracks);
+      setIsLoading(false);
       handleClose();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Falha ao importar as músicas.';
