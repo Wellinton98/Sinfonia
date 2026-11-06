@@ -409,20 +409,22 @@ export default function App() {
     }
   };
 
-  // Custom Local Track Import
-  const handleTrackImported = async (newTrack: Track) => {
-    const updatedTracks = [newTrack, ...tracks];
-    setTracks(updatedTracks);
-    setOfflineTrackIds((prev) => [...prev, newTrack.id]);
+  // Custom Local Album Import
+  const handleTracksImported = async (newTracks: Track[]) => {
+    if (newTracks.length === 0) return;
 
-    const customOnly = updatedTracks.filter((t) => t.isLocalImport);
+    const updatedTracks = [...newTracks, ...tracks];
+    setTracks(updatedTracks);
+    setOfflineTrackIds((prev) => [...new Set([...prev, ...newTracks.map((track) => track.id)])]);
+
+    const customOnly = updatedTracks.filter((track) => track.isLocalImport);
     await dbService.saveCustomTracks(customOnly);
 
     const { usageMB } = await dbService.getStorageEstimate();
     setStorageUsageMB(usageMB);
 
-    // Auto-play imported track
-    handlePlayTrack(newTrack, updatedTracks);
+    // Start with the first imported track and keep the album order in the queue.
+    handlePlayTrack(newTracks[0], newTracks);
   };
 
   // Lyrics Update
@@ -743,7 +745,7 @@ export default function App() {
       <ImportAudioModal
         isOpen={isImportOpen}
         onClose={() => setIsImportOpen(false)}
-        onTrackImported={handleTrackImported}
+        onTracksImported={handleTracksImported}
         isDark={isDark}
       />
     </div>
